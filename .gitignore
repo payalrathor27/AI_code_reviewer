@@ -1,0 +1,23 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Secrets — never commit API keys
+.env
+ui/.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Temp / generated files
+samples/_tmp_ui_review.py
+reviews/lint_report.json
+reviews/code_review_report.md
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,7 @@
+pylint==4.0.8          # static analysis: scans code for errors and quality issues
+streamlit==1.59.1      # web UI: file upload and code review interface
+rich==15.0.0           # terminal output formatting
+pydantic==2.13.5       # data validation and settings management
+python-dotenv==1.2.3   # load environment variables from .env files
+openai==3.8.0          # OpenAI / Gemini-compatible API client
+isort==9.0.1           # import sorting (used by static analysis workflow)
