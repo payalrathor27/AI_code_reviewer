@@ -42,7 +42,7 @@ def _build_client():
             api_key=groq_key,
             base_url="https://api.groq.com/openai/v1",
         )
-        return client, "llama3-8b-8192"
+        return client, "openai/gpt-oss-20b"
 
     if gemini_key:
         client = OpenAI(
