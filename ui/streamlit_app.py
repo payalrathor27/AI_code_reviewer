@@ -1,39 +1,58 @@
 import os
 import sys
 import json
+import tempfile
 from pathlib import Path
 from typing import List, Dict
 
 import streamlit as st
-from dotenv import load_dotenv
 
 # ======= Path setup so we can import from /src =======
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-sys.path.append(str(SRC))
+sys.path.insert(0, str(SRC))
+
+# Load .env for local development (no-op on Streamlit Cloud)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(ROOT / ".env")
+    load_dotenv(ROOT / "ui" / ".env")
+except ImportError:
+    pass
 
 from static_analyzer import run_pylint  # noqa: F402
 from ai_reviewer import review_code_with_ai, ai_fix_suggestions  # noqa: F402
 from auto_fixer import apply_auto_fixes  # noqa: F402
 
-# ======== Env & App Config ========
-load_dotenv(ROOT / ".env")
-load_dotenv(ROOT / "ui" / ".env")
+
+def _get_secret(key: str) -> str | None:
+    """Try st.secrets first (Streamlit Cloud), then fall back to env vars."""
+    try:
+        return st.secrets.get(key)
+    except Exception:
+        pass
+    return os.getenv(key)
+
+
+# ======== App Config ========
 st.set_page_config(page_title="AI Code Reviewer", page_icon="🤖", layout="wide")
 st.title("AI-Powered Code Reviewer")
 st.caption("Hybrid review = Static analysis (Pylint) + LLM feedback + optional auto-fixes")
 
-# Warn if no API key set (AI suggestions will fail gracefully)
-groq_key = os.getenv("GROQ_API_KEY")
-gemini_key = os.getenv("GEMINI_API_KEY")
-openai_key = os.getenv("OPENAI_API_KEY")
-if not groq_key and not gemini_key and (not openai_key or openai_key == "REPLACE_WITH_A_NEW_OPENAI_API_KEY"):
+# Warn if no API key is set (AI suggestions will fail gracefully)
+groq_key = _get_secret("GROQ_API_KEY")
+gemini_key = _get_secret("GEMINI_API_KEY")
+openai_key = _get_secret("OPENAI_API_KEY")
+if not groq_key and not gemini_key and (
+    not openai_key or openai_key == "REPLACE_WITH_A_NEW_OPENAI_API_KEY"
+):
     st.warning(
-        "No AI API key found. "
-        "Set GROQ_API_KEY (free), GEMINI_API_KEY, or OPENAI_API_KEY in your .env file for AI features."
+        "⚠️ No AI API key found. "
+        "Set **GROQ_API_KEY** (free), **GEMINI_API_KEY**, or **OPENAI_API_KEY** "
+        "in your `.streamlit/secrets.toml` or Streamlit Cloud Secrets for AI features."
     )
 
-# ====== Initialize session state keys (for persistence across reruns) ======
+# ====== Initialize session state ======
 for key, default in {
     "code_input": "",
     "last_lint_issues": [],
@@ -55,14 +74,14 @@ if sample_path.exists():
 
 # ====== Input area ======
 st.subheader("1) Provide code")
-col1, col2 = st.columns(2)  # gap param removed: not supported in older Streamlit
+col1, col2 = st.columns(2)
 
 with col1:
     uploaded = st.file_uploader("Upload a .py file", type=["py"])
     if uploaded is not None:
         code_text = uploaded.read().decode("utf-8")
         st.session_state["code_input"] = code_text
-        st.session_state["last_display_name"] = uploaded.name  # persist name immediately
+        st.session_state["last_display_name"] = uploaded.name
         st.info(f"Loaded file: {uploaded.name}")
 
 with col2:
@@ -126,16 +145,30 @@ if run_btn:
         st.error("Please upload or paste some Python code.")
         st.stop()
 
-    # Save temp code for pylint
-    tmp_file = ROOT / "samples" / "_tmp_ui_review.py"
-    tmp_file.write_text(code_to_review, encoding="utf-8")
+    # Write code to a temp file for pylint (works on both local and cloud)
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, encoding="utf-8"
+    ) as tmp:
+        tmp.write(code_to_review)
+        tmp_path = tmp.name
 
-    # Run pylint
+    # Run pylint — pass a temp path for the JSON output too
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp_json:
+        tmp_json_path = tmp_json.name
+
     with st.spinner("Running Pylint..."):
-        lint_issues = run_pylint(
-            str(tmp_file),
-            output_json=str(ROOT / "reviews" / "lint_report.json"),
-        )
+        try:
+            lint_issues = run_pylint(tmp_path, output_json=tmp_json_path)
+        finally:
+            # Clean up temp files
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            try:
+                os.unlink(tmp_json_path)
+            except OSError:
+                pass
 
     # AI review
     with st.spinner("Getting AI review..."):
@@ -147,7 +180,6 @@ if run_btn:
 
     # Score + report
     score = compute_quality_score(lint_issues)
-    # Use the name persisted when the file was uploaded, or fall back to "pasted_code.py"
     display_name = st.session_state.get("last_display_name", "pasted_code.py")
     report_md = build_report_md(
         file_name=display_name,
@@ -156,20 +188,17 @@ if run_btn:
         score=score,
     )
 
-    # Persist markdown report
-    reviews_dir = ROOT / "reviews"
-    reviews_dir.mkdir(parents=True, exist_ok=True)
-    (reviews_dir / "code_review_report.md").write_text(report_md, encoding="utf-8")
-
-    # --- Persist essentials in session state for Fixes buttons ---
+    # Persist in session state
     st.session_state["last_lint_issues"] = lint_issues
     st.session_state["last_code"] = code_to_review
+    st.session_state["last_report_md"] = report_md
+    st.session_state["last_lint_json"] = json.dumps(lint_issues, indent=2)
     # Clear previous fixes on each new run
     st.session_state["ai_fix_md"] = ""
     st.session_state["fixed_code"] = ""
     st.session_state["applied_fixes"] = []
 
-    st.success("Review complete! See results below.")
+    st.success("✅ Review complete! See results below.")
 
     # ====== Results ======
     top_cols = st.columns(3)
@@ -204,16 +233,16 @@ if run_btn:
 
     st.subheader("Download")
     st.download_button(
-        label="Download Markdown report",
+        label="⬇️ Download Markdown report",
         data=report_md.encode("utf-8"),
         file_name="code_review_report.md",
         mime="text/markdown",
         use_container_width=True,
     )
     st.download_button(
-        label="Download raw lint JSON",
+        label="⬇️ Download raw lint JSON",
         data=json.dumps(lint_issues, indent=2).encode("utf-8"),
-        file_name="lint_report.json",  # fixed: was "lint_repost.json"
+        file_name="lint_report.json",
         mime="application/json",
         use_container_width=True,
     )
@@ -235,7 +264,7 @@ with c1:
                 try:
                     st.session_state["ai_fix_md"] = ai_fix_suggestions(code_source, issues_source)
                 except Exception as e:
-                    st.session_state["ai_fix_md"] = f"AI suggestions failed: {e}"
+                    st.session_state["ai_fix_md"] = f"⚠️ AI suggestions failed: {e}"
 
     if st.session_state["ai_fix_md"]:
         st.markdown(st.session_state["ai_fix_md"])
@@ -261,7 +290,7 @@ with c2:
         else:
             st.info("No safe auto-fixes were applied.")
         st.download_button(
-            label="Download Fixed Code",
+            label="⬇️ Download Fixed Code",
             data=st.session_state["fixed_code"].encode("utf-8"),
             file_name=display_name_source.replace(".py", "_fixed.py"),
             mime="text/x-python",

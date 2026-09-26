@@ -70,9 +70,9 @@ def run_pylint(file_path: str, output_json: str = "reviews/lint_report.json") ->
     if not file.exists():
         raise FileNotFoundError(f"File {file_path} not found.")
 
-    # Use the virtual-env python if it exists, otherwise fall back to the current interpreter.
-    project_python = Path(__file__).resolve().parents[1] / ".venv" / "Scripts" / "python.exe"
-    pylint_python = str(project_python if project_python.exists() else Path(sys.executable))
+    # Always use the current interpreter so this works on Streamlit Cloud (no .venv present)
+    # and also works correctly in any local virtual environment.
+    pylint_python = sys.executable
 
     # Run pylint and capture JSON output.
     result = subprocess.run(
